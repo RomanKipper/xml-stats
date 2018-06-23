@@ -10,31 +10,38 @@ const app = express();
 
 app.use(express.static(path.join(__dirname, '../assets')));
 
-app.use('/litrestest.html', async function(req: express.Request, res: express.Response) {
-    let xmlFileUrl: string | undefined = req.query.XML;
+app.use('/litrestest.html', async (req: express.Request, res: express.Response) => {
+    try {
+        let xmlFileUrl: string | undefined = req.query.XML;
 
-    if (!xmlFileUrl) {
-        res.send(templates.placeholder({}));
-        return;
+        if (!xmlFileUrl) {
+            res.send(templates.placeholder({}));
+            return;
+        }
+
+        // Resolve relative urls if file is hosted locally
+        const { hostname, pathname } = url.parse(xmlFileUrl);
+        if (!hostname) {
+            xmlFileUrl = url.format({
+                protocol: 'http',
+                hostname: 'localhost',
+                port: 3000,
+                pathname
+            });
+        }
+
+        const { data: xmlFile } = await axios.get<string>(xmlFileUrl, { responseType: 'text' });
+
+        const xmlStats = getXmlStats(xmlFile);
+
+        res.send(templates.report(xmlStats));
+    } catch (error) {
+        res.send(templates.error(error.toString()));
     }
+});
 
-    const { hostname, pathname } = url.parse(xmlFileUrl);
-    if (!hostname) {
-        xmlFileUrl = url.format({
-            protocol: 'http',
-            hostname: 'localhost',
-            port: 3000,
-            pathname
-        });
-    }
-
-    const { data: xmlFile } = await axios.get<string>(xmlFileUrl, { responseType: 'text' });
-
-    console.log(xmlFile.substr(0, 100));
-
-    const xmlStats = getXmlStats(xmlFile);
-
-    res.send(templates.report(xmlStats));
+app.use((req: express.Request, res: express.Response) => {
+    res.redirect('/litrestest.html');
 });
 
 console.log('Starting server...');

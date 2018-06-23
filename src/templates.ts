@@ -11,3 +11,4 @@ function loadTemplate<T>(name: string) {
 
 export const report = loadTemplate<XmlStats>('report.hbs');
 export const placeholder = loadTemplate<{}>('placeholder.hbs');
+export const error = loadTemplate<string>('error.hbs');

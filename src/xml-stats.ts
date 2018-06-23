@@ -12,27 +12,33 @@ enum ParserState {
     READ_ATTRIBUTE_NAME,
     READ_ATTRIBUTE_VALUE,
     READ_CONTENT,
-    CLOSE_TAG,
-    CLOSE_PAIRED_TAG,
     READ_PAIRED_TAG_NAME
 }
 
+const CONTEXT_LENGTH = 100;
+
 class ParserError extends Error {
+    constructor(message: string) {
+        super('XML parser error: ' + message);
+    }
+}
+
+class UnexpectedCharacterError extends ParserError {
     constructor(state: ParserState, xml: string, charPosition: number) {
-        super(`XML parser error: ${charPosition}: found character "${xml[charPosition]}" in state ${ParserState[state]}; context: ${xml.substring(charPosition - 10, charPosition + 10)}`);
+        const contextLeft = xml.substring(charPosition - CONTEXT_LENGTH / 2, charPosition);
+        const contextRight = xml.substring(charPosition + 1, charPosition + CONTEXT_LENGTH / 2);
+        super(`Got unexpected character in state ${ParserState[state]}: ...${contextLeft}[${xml[charPosition]}]${contextRight}...`);
     }
 }
 
 function getXmlStats(xml: string): XmlStats {
-    let letterCount = 0;
-    const linksId: string[] = [];
-    const linkedElementsId: string[] = [];
-
     let parserState: ParserState = ParserState.FIND_TAG;
     let parsedHeader = false;
-
+    let letterCount = 0;
+    const linkIds: string[] = [];
+    const elementIds: string[] = [];
+    const tagNameStack: string[] = [];
     let tagName = '';
-    let pairedTagName = '';
     let attrName = '';
     let attrValue = '';
 
@@ -42,154 +48,161 @@ function getXmlStats(xml: string): XmlStats {
         switch (parserState) {
             case ParserState.FIND_TAG:
                 if (/\s/.test(character)) {
-                    break;
+                    continue;
                 }
                 if (character === '<') {
-                    if (!parsedHeader) {
-                        if (xml[parserPosition + 1] === '?') {
-                            parserPosition++;
-                        } else {
-                            throw new ParserError(parserState, xml, parserPosition);
-                        }
-                    } else {
+                    if (parsedHeader) {
                         parserState = ParserState.READ_TAG_NAME;
                         tagName = '';
-                        break;
+                        continue;
+                    } else if (xml[parserPosition + 1] === '?') {
+                        parserState = ParserState.READ_TAG_NAME;
+                        parserPosition++;
+                        continue;
                     }
                 }
-                throw new ParserError(parserState, xml, parserPosition);
+                break;
             case ParserState.READ_TAG_NAME:
-                if (/\w/.test(character)) {
+                if (/[\w-]/.test(character)) {
                     tagName += character;
-                    break;
+                    continue;
                 }
                 if (/\s/.test(character)) {
-                    parserState = ParserState.FIND_ATTRIBUTE;
-                    break;
+                    if (parsedHeader || tagName === 'xml') {
+                        tagNameStack.push(tagName);
+                        parserState = ParserState.FIND_ATTRIBUTE;
+                        continue;
+                    }
                 }
-                if (character === '>' && parsedHeader) {
+                if (parsedHeader && character === '>') {
+                    tagNameStack.push(tagName);
                     parserState = ParserState.READ_CONTENT;
-                    break;
+                    continue;
                 }
-                if (character === '/' && parsedHeader) {
-                    parserState = ParserState.CLOSE_TAG;
-                    break;
+                if (parsedHeader && character === '/' && xml[parserPosition + 1] === '>') {
+                    parserPosition++;
+                    parserState = ParserState.READ_CONTENT;
+                    continue;
                 }
-                throw new ParserError(parserState, xml, parserPosition);
-            case ParserState.CLOSE_TAG:
-                if (character === '>') {
-                    parserState = ParserState.FIND_TAG;
-                    break;
-                }
-                throw new ParserError(parserState, xml, parserPosition);
+                break;
             case ParserState.FIND_ATTRIBUTE:
                 if (/\s/.test(character)) {
-                    break;
+                    continue;
                 }
                 if (/\w/.test(character)) {
                     parserState = ParserState.READ_ATTRIBUTE_NAME_OF_PREFIX;
-                    attrName = '';
-                    break;
+                    attrName = character;
+                    continue;
                 }
-                if (!parsedHeader) {
-                    if (character === '?' && xml[parserPosition + 1] === '>') {
-                        parsedHeader = true;
-                        break;
-                    }
-                } else if (character === '>') {
+                if (parsedHeader && character === '>') {
                     parserState = ParserState.READ_CONTENT;
-                    break;
+                    continue;
                 }
-                throw new ParserError(parserState, xml, parserPosition);
+                if (parsedHeader && character === '/' && xml[parserPosition + 1] === '>') {
+                    tagNameStack.pop();
+                    parserPosition++;
+                    parserState = ParserState.READ_CONTENT;
+                    continue;
+                }
+                if (!parsedHeader && character === '?' && xml[parserPosition + 1] === '>') {
+                    tagNameStack.pop();
+                    parserPosition++;
+                    parsedHeader = true;
+                    parserState = ParserState.READ_CONTENT;
+                    continue;
+                }
+                break;
             case ParserState.READ_ATTRIBUTE_NAME_OF_PREFIX:
-                if (/\w/.test(character)) {
+                if (/[\w-]/.test(character)) {
                     attrName += character;
-                    break;
+                    continue;
                 }
                 if (character === ':') {
                     // There was just a prefix, from now we build the actual attribute name.
                     parserState = ParserState.READ_ATTRIBUTE_NAME;
                     attrName = '';
-                    break;
+                    continue;
                 }
-                if (character === '\"') {
+                if (character === '=' && xml[parserPosition + 1] === '\"') {
                     parserState = ParserState.READ_ATTRIBUTE_VALUE;
+                    parserPosition++;
                     attrValue = '';
-                    break;
+                    continue;
                 }
-                throw new ParserError(parserState, xml, parserPosition);
+                break;
             case ParserState.READ_ATTRIBUTE_NAME:
-                if (/\w/.test(character)) {
+                if (/[\w-]/.test(character)) {
                     attrName += character;
-                    break;
+                    continue;
                 }
-                if (character === '\"') {
+                if (character === '=' && xml[parserPosition + 1] === '\"') {
                     parserState = ParserState.READ_ATTRIBUTE_VALUE;
+                    parserPosition++;
                     attrValue = '';
-                    break;
+                    continue;
                 }
-                throw new ParserError(parserState, xml, parserPosition);
+                break;
             case ParserState.READ_ATTRIBUTE_VALUE:
                 if (character === '\"') {
                     if (tagName === 'a' && attrName === 'href') {
                         if (attrValue[0] === '#') {
-                            linksId.push(attrValue.substring(1));
+                            linkIds.push(attrValue.substring(1));
                         } else {
-                            throw new Error(`Invalid link id: ${attrValue}`);
+                            throw new ParserError(`Invalid link id: ${attrValue}`);
                         }
                     } else if (attrName === 'id') {
-                        if (attrValue[0] === '#') {
-                            linkedElementsId.push(attrValue.substring(1));
-                        } else {
-                            throw new Error(`Invalid link id: ${attrValue}`);
-                        }
+                        elementIds.push(attrValue);
                     }
                     parserState = ParserState.FIND_ATTRIBUTE;
-                    break;
+                    continue;
                 }
                 attrValue += character;
-                break;
+                continue;
             case ParserState.READ_CONTENT:
                 if (character === '<') {
-                    parserState = ParserState.CLOSE_PAIRED_TAG;
-                    break;
+                    if (xml[parserPosition + 1] === '/') {
+                        parserState = ParserState.READ_PAIRED_TAG_NAME;
+                        tagName = '';
+                        parserPosition++;
+                    } else {
+                        parserState = ParserState.READ_TAG_NAME;
+                        tagName = '';
+                    }
+                    continue;
                 }
-                if (character === '>') {
-                    throw new ParserError(parserState, xml, parserPosition);
-                }
-                if (/\S/.test(character)) {
-                    letterCount++;
+                if (character !== '>') {
+                    if (/[a-zA-Zа-яА-ЯёЁ\d]/.test(character)) {
+                        letterCount++;
+                    }
+                    continue;
                 }
                 break;
-            case ParserState.CLOSE_PAIRED_TAG:
-                if (character === '/') {
-                    parserState = ParserState.READ_PAIRED_TAG_NAME;
-                    pairedTagName = '';
-                    break;
-                }
-                throw new ParserError(parserState, xml, parserPosition);
             case ParserState.READ_PAIRED_TAG_NAME:
-                if (/\w/.test(character)) {
-                    pairedTagName += character;
-                    break;
+                if (/[\w-]/.test(character)) {
+                    tagName += character;
+                    continue;
                 }
                 if (character === '>') {
+                    const pairedTagName = tagNameStack[tagNameStack.length - 1];
                     if (tagName !== pairedTagName) {
-                        throw new Error(`Tag name mismatch: <${tagName}> ... </${pairedTagName}>`);
+                        throw new ParserError(`Tag mismatch: <${pairedTagName}> ... </${tagName}>; stack: ${tagNameStack}`);
                     }
-                    parserState = ParserState.FIND_TAG;
-                    break;
+                    tagNameStack.pop();
+                    parserState = ParserState.READ_CONTENT;
+                    continue;
                 }
-                throw new ParserError(parserState, xml, parserPosition);
+                break;
         }
+
+        throw new UnexpectedCharacterError(parserState, xml, parserPosition);
     }
 
-    const brokenLinksId = linksId.filter(id => linkedElementsId.every(linkId => linkId !== id));
+    const brokenlinkIds = linkIds.filter(linkId => elementIds.indexOf(linkId) === -1);
 
     return {
         letterCount,
-        totalLinkCount: linksId.length,
-        brokenLinkCount: brokenLinksId.length
+        totalLinkCount: linkIds.length,
+        brokenLinkCount: brokenlinkIds.length
     };
 }
 
